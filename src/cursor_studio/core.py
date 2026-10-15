@@ -230,7 +230,7 @@ def guess_role(path: Path) -> str | None:
             return role
     guesses = {
         "normalselect": "left_ptr", "alternateselect": "up_arrow",
-        "linkselect": "hand2", "precisionselect": "crosshair", "textselect": "xterm",
+        "helpselect": "question_arrow", "linkselect": "hand2", "precisionselect": "crosshair", "textselect": "xterm",
         "handwriting": "pencil", "workinginbackground": "left_ptr_watch",
         "horizontalresize": "sb_h_double_arrow", "verticalresize": "sb_v_double_arrow",
         "diagonalresize1": "size_fdiag", "diagonalresize2": "size_bdiag",
