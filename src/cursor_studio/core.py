@@ -1,11 +1,13 @@
 """Strict CUR decoding and a dependency-free Xcursor serializer.
 
-All file reads are bounded. Export builds in a private staging directory and refuses
-existing destinations. No external command or Windows installer is executed.
+All file reads are bounded. Export builds in a private staging directory; replacement
+requires explicit opt-in and keeps the previous theme as a backup. No external command or Windows installer is executed.
 """
 from __future__ import annotations
 
 import io
+import fcntl
+import time
 import os
 import re
 import shutil
@@ -15,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
+
+STANDARD_SIZES = (24, 32, 48, 64, 96, 128)
 
 MAX_FILE_SIZE = 32 * 1024 * 1024
 MAX_IMAGES = 128
@@ -111,10 +115,35 @@ def read_cur(path: str | Path) -> Cursor:
     return Cursor(path.resolve(), tuple(images))
 
 
-def xcursor_bytes(cursor: Cursor) -> bytes:
+def resized_images(cursor: Cursor, sizes: tuple[int, ...] | None = None,
+                   resampling: str = "smooth") -> tuple[CursorImage, ...]:
+    """Keep native images and generate missing nominal sizes from the best source."""
+    if resampling not in {"smooth", "pixel"}:
+        raise CursorError("Método de redimensionamento inválido.")
+    if sizes is None:
+        return cursor.images
+    if len(sizes) > 32 or any(type(size) is not int or not 1 <= size <= 256 for size in sizes):
+        raise CursorError("Use até 32 tamanhos entre 1 e 256 pixels.")
+    images = {frame.nominal_size: frame for frame in cursor.images}
+    for size in sorted(set(sizes)):
+        if size in images:
+            continue
+        bigger = [frame for frame in cursor.images if frame.nominal_size >= size]
+        source = min(bigger, key=lambda f: f.nominal_size) if bigger else cursor.largest
+        width, height = source.image.size
+        nw, nh = max(1, round(width * size / source.nominal_size)), max(1, round(height * size / source.nominal_size))
+        method = Image.Resampling.NEAREST if resampling == "pixel" else Image.Resampling.LANCZOS
+        image = source.image.resize((nw, nh), method)
+        images[size] = CursorImage(image, min(nw - 1, round(source.hotspot_x * nw / width)),
+                                  min(nh - 1, round(source.hotspot_y * nh / height)))
+    return tuple(images[size] for size in sorted(images))
+
+
+def xcursor_bytes(cursor: Cursor, sizes: tuple[int, ...] | None = None,
+                  resampling: str = "smooth") -> bytes:
     """Serialize Xcursor image chunks, including premultiplied ARGB pixels."""
     # Duplicate dimensions often represent alternate color depths; prefer the last.
-    unique = {item.image.size: item for item in cursor.images}
+    unique = {item.image.size: item for item in resized_images(cursor, sizes, resampling)}
     images = sorted(unique.values(), key=lambda item: item.nominal_size)
     position = 16 + 12 * len(images)
     toc, chunks = [], []
@@ -147,8 +176,38 @@ def theme_slug(name: str) -> str:
     return slug
 
 
-def export_theme(assignments: dict[str, Cursor], name: str, parent: str | Path) -> Path:
-    """Create a complete theme without overwriting an existing file or directory."""
+def _commit_theme(stage: Path, destination: Path, overwrite: bool) -> None:
+    """Serialize writers and keep the previous complete theme for rollback/recovery."""
+    descriptor = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+    backup = None
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if destination.exists() or destination.is_symlink():
+            if not overwrite:
+                raise CursorError(f"Já existe um tema em {destination}.")
+            if (destination.is_symlink() or not destination.is_dir()
+                    or not (destination / "index.theme").is_file()
+                    or not (destination / "cursors").is_dir()):
+                raise CursorError("O destino não é uma pasta de tema válida. Nenhum arquivo foi substituído.")
+            backups = destination.parent / ".cursor-studio-backups"
+            backups.mkdir(exist_ok=True)
+            backup = backups / f"{destination.name}-{time.time_ns()}"
+            destination.rename(backup)
+        try:
+            stage.rename(destination)
+        except Exception:
+            if backup is not None:
+                backup.rename(destination)
+            raise
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def export_theme(assignments: dict[str, Cursor], name: str, parent: str | Path, *,
+                 overwrite: bool = False, sizes: tuple[int, ...] | None = None,
+                 resampling: str = "smooth") -> Path:
+    """Build privately, then publish; replacing a theme requires explicit opt-in."""
     slug = theme_slug(name)
     if not assignments or "left_ptr" not in assignments:
         raise CursorError("Associe pelo menos um cursor à função Ponteiro padrão.")
@@ -157,27 +216,20 @@ def export_theme(assignments: dict[str, Cursor], name: str, parent: str | Path) 
     parent = Path(parent).expanduser().resolve()
     parent.mkdir(parents=True, exist_ok=True)
     destination = parent / slug
-    if destination.exists() or destination.is_symlink():
-        raise CursorError(f"Já existe um tema em {destination}. Escolha outro nome ou pasta.")
+    if (destination.exists() or destination.is_symlink()) and not overwrite:
+        raise CursorError(f"Já existe um tema em {destination}.")
     stage = Path(tempfile.mkdtemp(prefix=".cursor-studio-", dir=parent))
     try:
         cursors = stage / "cursors"
         cursors.mkdir()
         for role, cursor in assignments.items():
-            (cursors / role).write_bytes(xcursor_bytes(cursor))
+            (cursors / role).write_bytes(xcursor_bytes(cursor, sizes, resampling))
             for alias in ROLES[role][1]:
                 (cursors / alias).symlink_to(role)
         (stage / "index.theme").write_text(
             f"[Icon Theme]\nName={name.strip()}\nComment=Created with Cursor Studio\n"
             "Inherits=Breeze,Adwaita\nExample=left_ptr\n", encoding="utf-8")
-        # Reserve the destination first, then move staged contents. Refuse races.
-        destination.mkdir()
-        try:
-            for item in stage.iterdir():
-                shutil.move(str(item), str(destination / item.name))
-        except Exception:
-            shutil.rmtree(destination)
-            raise
+        _commit_theme(stage, destination, overwrite)
         return destination
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -209,14 +261,16 @@ def register_user_theme(theme: Path) -> Path:
     return theme
 
 
-def install_user_theme(assignments: dict[str, Cursor], name: str) -> Path:
+def install_user_theme(assignments: dict[str, Cursor], name: str, *,
+                       overwrite: bool = False, sizes: tuple[int, ...] | None = None,
+                       resampling: str = "smooth") -> Path:
     slug = theme_slug(name)
     target = user_icons_dir().resolve() / slug
     legacy = Path.home() / ".icons" / slug
     if (legacy.exists() or legacy.is_symlink()) and legacy != target:
         if not (legacy.is_symlink() and legacy.resolve() == target):
             raise CursorError(f"Já existe um tema em {legacy}. Escolha outro nome.")
-    theme = export_theme(assignments, name, user_icons_dir())
+    theme = export_theme(assignments, name, user_icons_dir(), overwrite=overwrite, sizes=sizes, resampling=resampling)
     try:
         return register_user_theme(theme)
     except OSError as exc:

@@ -171,3 +171,80 @@ def test_install_preserves_legacy_conflicts(tmp_path, monkeypatch):
         install_user_theme({"left_ptr": cursor}, "Compatible")
     assert (existing / "keep.txt").read_text() == "existing theme"
     assert not (tmp_path / "data/icons/compatible").exists()
+
+
+def test_multisize_output_and_hotspot_scaling(tmp_path):
+    from cursor_studio.core import STANDARD_SIZES
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur", sizes=(32,)))
+    data = xcursor_bytes(cursor, sizes=STANDARD_SIZES, resampling="pixel")
+    assert struct.unpack_from("<I", data, 12)[0] == 6
+    frames = {}
+    for i in range(6):
+        _, size, offset = struct.unpack_from("<3I", data, 16 + i * 12)
+        frames[size] = struct.unpack_from("<9I", data, offset)
+    assert sorted(frames) == list(STANDARD_SIZES)
+    assert frames[64][4:8] == (64, 64, 4, 6)
+    assert frames[128][4:8] == (128, 128, 8, 12)
+
+
+def test_pixel_art_and_non_square_dimensions(tmp_path):
+    from cursor_studio.core import Cursor, CursorImage, resized_images
+    image = Image.new("RGBA", (8, 16), (100, 200, 30, 128))
+    image.putpixel((0, 0), (255, 0, 0, 255))
+    cursor = Cursor(tmp_path / "virtual.cur", (CursorImage(image, 3, 5),))
+    output = resized_images(cursor, (64,), "pixel")[-1]
+    assert output.image.size == (32, 64)
+    assert (output.hotspot_x, output.hotspot_y) == (12, 20)
+    assert output.image.getpixel((3, 3)) == (255, 0, 0, 255)
+    assert output.image.getpixel((4, 4)) == (100, 200, 30, 128)
+
+
+@pytest.mark.parametrize("sizes", [(0,), (257,), (1.5,), tuple(range(1, 34))])
+def test_invalid_output_sizes(tmp_path, sizes):
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    with pytest.raises(CursorError):
+        xcursor_bytes(cursor, sizes=sizes)
+
+
+def test_confirmed_overwrite_keeps_backup(tmp_path):
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    theme = export_theme({"left_ptr": cursor}, "Theme", tmp_path / "out")
+    before = (theme / "cursors/left_ptr").read_bytes()
+    export_theme({"left_ptr": cursor}, "Theme", tmp_path / "out", overwrite=True, sizes=(96,))
+    assert (theme / "cursors/left_ptr").read_bytes() != before
+    backups = list((theme.parent / ".cursor-studio-backups").iterdir())
+    assert len(backups) == 1
+    assert (backups[0] / "cursors/left_ptr").read_bytes() == before
+
+
+def test_overwrite_rolls_back_if_commit_fails(tmp_path, monkeypatch):
+    from pathlib import Path
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    parent = tmp_path / "out"
+    theme = export_theme({"left_ptr": cursor}, "Theme", parent)
+    before = (theme / "cursors/left_ptr").read_bytes()
+    original = Path.rename
+    def fail_stage(self, destination):
+        if self.parent == parent and self.name.startswith(".cursor-studio-"):
+            raise OSError("Simulated publication failure")
+        return original(self, destination)
+    monkeypatch.setattr(Path, "rename", fail_stage)
+    with pytest.raises(OSError):
+        export_theme({"left_ptr": cursor}, "Theme", parent, overwrite=True, sizes=(96,))
+    assert (theme / "cursors/left_ptr").read_bytes() == before
+
+
+def test_overwrite_rejects_unrelated_folders_and_symlinks(tmp_path):
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    other = tmp_path / "theme"
+    other.mkdir()
+    (other / "keep").write_text("unrelated data")
+    with pytest.raises(CursorError):
+        export_theme({"left_ptr": cursor}, "Theme", tmp_path, overwrite=True)
+    assert (other / "keep").read_text() == "unrelated data"
+    actual = export_theme({"left_ptr": cursor}, "Real", tmp_path)
+    link = tmp_path / "linked"
+    link.symlink_to(actual)
+    with pytest.raises(CursorError):
+        export_theme({"left_ptr": cursor}, "Linked", tmp_path, overwrite=True)
+    assert link.resolve() == actual

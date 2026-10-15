@@ -21,6 +21,6 @@ entry = applications / "cursor-studio.desktop"
 entry.write_text(
     '[Desktop Entry]\nType=Application\nName=Cursor Studio\n'
     'Comment=Convert Windows cursors into Linux themes\n'
-    f'Exec="{escaped}" %F\nIcon=cursor-studio\nTerminal=false\n'
+    f'Exec="{escaped}" %F\nIcon=cursor-studio\nTerminal=false\nStartupNotify=true\n'
     'Categories=Graphics;Utility;\nKeywords=cursor;theme;cur;xcursor;\n', encoding="utf-8")
 print(entry)

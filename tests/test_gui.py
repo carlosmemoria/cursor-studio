@@ -122,3 +122,99 @@ def test_dialog_contrast_under_light_system_palette():
     dialog.deleteLater()
     app.setPalette(previous)
     app.processEvents()
+
+
+def test_overwrite_cancel_and_confirm(tmp_path, monkeypatch):
+    from PySide6.QtCore import QEventLoop, QTimer
+    from cursor_studio.core import export_theme
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    window.imported(([cursor], []))
+    window.name.setText("Existing")
+    parent = tmp_path / "out"
+    theme = export_theme({"left_ptr": cursor}, "Existing", parent)
+    original = (theme / "cursors/left_ptr").read_bytes()
+    monkeypatch.setattr(window, "ask", lambda *args: False)
+    window.save_theme(parent, False)
+    assert not window.busy
+    assert (theme / "cursors/left_ptr").read_bytes() == original
+    monkeypatch.setattr(window, "ask", lambda *args: True)
+    window.save_theme(parent, False)
+    loop = QEventLoop()
+    poll = QTimer()
+    poll.timeout.connect(lambda: loop.quit() if not window.busy else None)
+    poll.start(10)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    poll.stop()
+    assert not window.busy
+    assert (theme / "cursors/left_ptr").read_bytes() != original
+    assert len(list((parent / ".cursor-studio-backups").iterdir())) == 1
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_activation_restores_window_and_keeps_forwarded_files_while_busy(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    window.showMinimized()
+    app.processEvents()
+    window.busy = True
+    window.activate_instance([str(tmp_path / "next.cur")])
+    app.processEvents()
+    assert not window.isMinimized()
+    assert window.pending_paths == [str(tmp_path / "next.cur")]
+    imported = []
+    monkeypatch.setattr(window, "import_paths", imported.extend)
+    window.unlock()
+    app.processEvents()
+    assert imported == [str(tmp_path / "next.cur")]
+    assert window.pending_paths == []
+    window.hide()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_actual_launcher_reuses_window_and_imports_files(tmp_path):
+    import sys
+    import tempfile
+    from pathlib import Path
+    from PySide6.QtCore import QEventLoop, QProcess, QProcessEnvironment, QTimer
+    from cursor_studio.instance import SingleInstance
+    app = QApplication.instance() or QApplication([])
+    source = make_cur(tmp_path / "arrow.cur")
+    window = Window()
+    window.show()
+    with tempfile.TemporaryDirectory(prefix="cs-ipc-") as runtime:
+        guard = SingleInstance(str(Path(runtime) / "memoria-cursor-studio.sock"))
+        assert guard.start([])
+        guard.received.connect(window.activate_instance)
+        process = QProcess()
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert("XDG_RUNTIME_DIR", runtime)
+        environment.insert("QT_QPA_PLATFORM", "offscreen")
+        process.setProcessEnvironment(environment)
+        process.start(sys.executable, ["-m", "cursor_studio.app", str(source)])
+        loop = QEventLoop()
+        poll = QTimer()
+        poll.timeout.connect(lambda: loop.quit() if (
+            process.state() == QProcess.ProcessState.NotRunning and not window.busy
+            and bool(window.cursors)) else None)
+        poll.start(10)
+        QTimer.singleShot(8000, loop.quit)
+        try:
+            loop.exec()
+            assert process.state() == QProcess.ProcessState.NotRunning
+            assert process.exitCode() == 0, bytes(process.readAllStandardError()).decode()
+            assert len(window.cursors) == 1
+            assert window.cursors[0].path == source.resolve()
+            assert len([w for w in app.topLevelWidgets() if isinstance(w, Window) and w.isVisible()]) == 1
+        finally:
+            if process.state() != QProcess.ProcessState.NotRunning:
+                process.kill()
+                process.waitForFinished(2000)
+            guard.close()
+            window.hide()
+            window.deleteLater()
+            app.processEvents()

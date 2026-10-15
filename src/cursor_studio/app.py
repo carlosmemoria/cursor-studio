@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .core import Cursor, ROLES, export_theme, guess_role, install_user_theme, read_cur, user_icons_dir
+from .core import Cursor, ROLES, export_theme, guess_role, install_user_theme, read_cur, theme_slug, user_icons_dir, STANDARD_SIZES
 
 STYLE = """
 * { font-family: 'Inter', 'Noto Sans', sans-serif; font-size: 13px; }
@@ -138,6 +139,7 @@ class Window(QMainWindow):
         self.cursors: list[Cursor] = []
         self.roles: dict[Path, str | None] = {}
         self.busy = False
+        self.pending_paths = []
         self.task = None
         self.setWindowTitle("Cursor Studio")
         self.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.svg"))))
@@ -185,6 +187,17 @@ class Window(QMainWindow):
         self.name.setAccessibleName("Nome do tema")
         theme_row.addWidget(self.name, 1)
         body.addLayout(theme_row)
+        sizing = QHBoxLayout()
+        sizing.addWidget(label("Tamanhos no Linux"))
+        self.output_sizes = QComboBox()
+        self.output_sizes.addItem("24–128 px · Suave", "smooth")
+        self.output_sizes.addItem("24–128 px · Pixel art", "pixel")
+        self.output_sizes.addItem("Somente tamanhos originais", "original")
+        self.output_sizes.setAccessibleName("Tamanhos e método de ampliação do tema")
+        self.output_sizes.setToolTip("Gera 24, 32, 48, 64, 96 e 128 px, além dos originais.\n"
+                                     "Pixel art mantém bordas nítidas; Suave interpola os pixels.")
+        sizing.addWidget(self.output_sizes, 1)
+        body.addLayout(sizing)
         splitter = QSplitter()
         splitter.setHandleWidth(14)
         collection = QFrame()
@@ -443,6 +456,21 @@ class Window(QMainWindow):
     def save_theme(self, parent, installed):
         assignments = {self.roles[c.path]: c for c in self.cursors if self.roles[c.path]}
         name = self.name.text()
+        try:
+            destination = Path(parent).expanduser().resolve() / theme_slug(name)
+        except ValueError as exc:
+            self.error(str(exc))
+            return
+        overwrite = destination.exists() or destination.is_symlink()
+        if overwrite and not self.ask("Substituir tema existente?",
+                                      f"Já existe um tema em:\n{destination}\n\n"
+                                      "Deseja substituí-lo por este projeto?\n"
+                                      "A versão anterior será guardada em .cursor-studio-backups na mesma pasta."):
+            self.status.setText("Substituição cancelada. O tema existente foi preservado.")
+            return
+        mode = self.output_sizes.currentData()
+        sizes = None if mode == "original" else STANDARD_SIZES
+        resampling = "pixel" if mode == "pixel" else "smooth"
 
         def complete(path):
             self.status.setText(f"Tema {'instalado' if installed else 'exportado'}: {path}")
@@ -451,8 +479,10 @@ class Window(QMainWindow):
                                         "Abra as configurações de aparência do seu ambiente e selecione "
                                         f"“{name.strip()}”. Se não aparecer, reabra as configurações.\n\n"
                                         "Funções não fornecidas usam o tema herdado quando disponível.")
-        operation = (lambda: install_user_theme(assignments, name)) if installed else (
-            lambda: export_theme(assignments, name, parent))
+        operation = (lambda: install_user_theme(assignments, name, overwrite=overwrite,
+                                                       sizes=sizes, resampling=resampling)) if installed else (
+            lambda: export_theme(assignments, name, parent, overwrite=overwrite,
+                                 sizes=sizes, resampling=resampling))
         self.run_task(operation, complete, "Gerando tema Xcursor…")
 
     def run_task(self, function, complete, message):
@@ -461,7 +491,7 @@ class Window(QMainWindow):
         self.busy = True
         self.status.setText(message)
         self.progress.show()
-        for widget in [self.add, self.remove, self.role, self.name, self.export, self.install]:
+        for widget in [self.add, self.remove, self.role, self.name, self.output_sizes, self.export, self.install]:
             widget.setEnabled(False)
         self.task = Task(function)
 
@@ -481,8 +511,36 @@ class Window(QMainWindow):
         self.progress.hide()
         self.add.setEnabled(True)
         self.name.setEnabled(True)
+        self.output_sizes.setEnabled(True)
         self.select(self.files.currentRow())
         self.refresh()
+        if self.pending_paths:
+            paths, self.pending_paths = self.pending_paths, []
+            QTimer.singleShot(0, lambda: self.import_paths(paths))
+
+    def activate_instance(self, paths, token=""):
+        previous = os.environ.get("XDG_ACTIVATION_TOKEN")
+        if token:
+            os.environ["XDG_ACTIVATION_TOKEN"] = token
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            else:
+                self.show()
+            target = QApplication.activeModalWidget() or self
+            target.raise_()
+            target.activateWindow()
+        finally:
+            if token:
+                if previous is None:
+                    os.environ.pop("XDG_ACTIVATION_TOKEN", None)
+                else:
+                    os.environ["XDG_ACTIVATION_TOKEN"] = previous
+        if paths:
+            if self.busy:
+                self.pending_paths.extend(paths)
+            else:
+                self.import_paths(paths)
 
     def notify(self, title, message):
         dialog = QMessageBox(self)
@@ -537,10 +595,22 @@ def main():
     app.setApplicationName("Cursor Studio")
     app.setOrganizationName("Memória")
     app.setApplicationVersion(__version__)
+    app.setDesktopFileName("cursor-studio")
+    from .instance import SingleInstance
+    instance = SingleInstance()
+    try:
+        primary = instance.start([str(Path(p).resolve()) for p in sys.argv[1:]])
+    except RuntimeError as exc:
+        QMessageBox.critical(None, "Cursor Studio", str(exc))
+        return 1
+    if not primary:
+        return 0
+    app.aboutToQuit.connect(instance.close)
     app.setStyle("Fusion")
     app.setFont(QFont("Noto Sans", 10))
     app.setStyleSheet(STYLE)
     window = Window()
+    instance.received.connect(lambda paths: window.activate_instance(paths, instance.activation_token))
     window.show()
     if len(sys.argv) > 1:
         window.import_paths(sys.argv[1:])

@@ -25,7 +25,10 @@ A native Qt 6 desktop app to preview `.cur` files and turn them into installable
 - Hover over the preview to try the cursor at its real size.
 - Assign cursor roles using a visual inspector; common filenames are suggested automatically.
 - Export a theme folder or install it for the current user, without root access.
-- Preserve embedded resolutions, alpha transparency and per-resolution hotspots.
+- Preserve embedded resolutions, alpha transparency and per-resolution hotspots, including hotspot scaling for generated sizes.
+- Offer 24, 32, 48, 64, 96 and 128 px sizes for KDE/GNOME selection, with smooth or pixel-art resizing.
+- Reuse the existing app window on subsequent launches and forward files to it.
+- Confirm theme replacement and retain the previous complete version as a backup.
 - Generate canonical Xcursor names and common CSS/legacy aliases.
 - Convert from the command line without starting Qt.
 
@@ -33,7 +36,7 @@ All processing is local. The app does not upload cursors, run Windows installers
 
 ## Scope and compatibility
 
-**Version 0.1 is a beta for static `.cur` cursors.** Animated `.ani`, INF import, archive import, session persistence and automatic theme activation are not implemented. Imported projects live in memory; exported themes are saved on disk.
+**Version 0.2 is a beta for static `.cur` cursors.** Animated `.ani`, INF import, archive import, session persistence and automatic theme activation are not implemented. Imported projects live in memory; exported themes are saved on disk.
 
 CUR images encoded as PNG or DIB are decoded using Pillow. Xcursor serialization is implemented in this project, with premultiplied ARGB pixels. Alternate images with identical dimensions are collapsed to the last entry. The app supports up to 200 files per session, 128 images per file and 32 MiB per input file, with a 256 MiB decoded-image budget per session.
 
@@ -59,6 +62,8 @@ Optional application-menu launcher:
 .venv/bin/python packaging/install-desktop.py
 ```
 
+Subsequent launches activate the existing window and forward any file arguments. When updating from 0.1.x, close the old application windows once; single-instance handling takes effect after reopening the updated app.
+
 The launcher points to this environment. Keep the repository and `.venv` at the same location, or rerun the installer after moving them. Remove `~/.local/share/applications/cursor-studio.desktop` and `~/.local/share/icons/hicolor/scalable/apps/cursor-studio.svg` to uninstall that launcher (adjust for `XDG_DATA_HOME`). No PyPI package or standalone binary has been published yet.
 
 ## Workflow
@@ -66,10 +71,11 @@ The launcher points to this environment. Keep the repository and `.venv` at the 
 1. Import your `.cur` files with **Importar .cur**, drag and drop, or `Ctrl+O`.
 2. Select a file and inspect its preview and resolutions.
 3. Choose a role under **Função no tema**. Assign at least **Ponteiro padrão**. Each role can only be assigned once; assigning an occupied role offers to transfer it.
-4. Name the theme. **Exportar tema** creates a folder in your chosen destination; **Instalar no Linux** writes to `$XDG_DATA_HOME/icons` (default `~/.local/share/icons`) and registers a per-theme link in `~/.icons` for legacy Xcursor search paths.
-5. Select the installed theme in your desktop's appearance settings. Reopen those settings if the theme list is cached.
+4. Choose **Tamanhos no Linux**: smooth resizing, pixel art (nearest neighbor), or original sizes only. The first two modes retain native images and add 24–128 px variants. Enlarging an image does not add artwork detail.
+5. Name the theme. **Exportar tema** creates a folder in your chosen destination; **Instalar no Linux** writes to `$XDG_DATA_HOME/icons` (default `~/.local/share/icons`) and registers a per-theme link in `~/.icons` for legacy Xcursor search paths.
+6. Select the installed theme in your desktop's appearance settings. Reopen those settings if the theme list is cached.
 
-Existing theme folders and compatibility links are never overwritten. To remove an installed theme, delete its theme folder and its matching `~/.icons/<theme-slug>` link. Choose another theme name or destination to export again. Deleting a file from the app only removes it from the current session, never from disk.
+When a theme folder exists, the GUI asks before replacing it. Cancel leaves it unchanged. A confirmed replacement keeps the previous complete theme in `<parent>/.cursor-studio-backups/<slug>-<timestamp>`; publication failures restore it automatically. Unrelated folders, destination symlinks and conflicting compatibility links are never replaced. To recover a retained version manually, close the app, move the current theme aside and move the backup to the original theme path. To remove an installed theme, delete its theme folder and its matching `~/.icons/<theme-slug>` link. Choose another theme name or destination to export again. Deleting a file from the app only removes it from the current session, never from disk.
 
 ## Command line
 
@@ -82,7 +88,14 @@ Existing theme folders and compatibility links are never overwritten. To remove 
   left_ptr=arrow.cur hand2=link.cur xterm=text.cur
 ```
 
-Use `--help` on either subcommand. Theme roles are listed in `src/cursor_studio/core.py`. Quoting paths containing spaces follows your shell's normal rules.
+To generate selectable sizes or replace a theme from the CLI, opt in explicitly:
+
+```bash
+.venv/bin/cursor-studio-cli theme --name 'My Theme' --output ./themes \
+  --sizes 24,32,48,64,96,128 --pixel-art --overwrite left_ptr=arrow.cur
+```
+
+CLI conversion preserves original sizes unless `--sizes` is supplied; `--overwrite` is only for complete themes and keeps the previous version as a backup. Use `--help` on either subcommand. Theme roles are listed in `src/cursor_studio/core.py`. Quoting paths containing spaces follows your shell's normal rules.
 
 ## Development
 
@@ -93,13 +106,13 @@ QT_QPA_PLATFORM=offscreen .venv/bin/pytest -q
 .venv/bin/python -m build
 ```
 
-Tests cover PNG/DIB CUR decoding, hotspots, malformed input, premultiplied pixels, theme aliases, overwrite protection, CLI behavior, compatibility links, Windows scheme names, role transfer, dialog contrast and GUI state transitions. When `libXcursor` is present, an integration test opens the generated files through the system library. CI runs on Python 3.11–3.13.
+Tests cover PNG/DIB CUR decoding, hotspots, malformed input, premultiplied pixels, theme aliases, overwrite protection, CLI behavior, compatibility links, Windows scheme names, role transfer, dialog contrast and GUI state transitions. When `libXcursor` is present, an integration test opens the generated files through the system library. Tests also cover confirmed/cancelled replacement, rollback after publication failure, scaled hotspots, pixel-art rendering, real process-to-process forwarding and recovery after a primary-process crash. CI runs on Python 3.11–3.13.
 
 ## Português
 
 **Cursor Studio** converte cursores estáticos do Windows (`.cur`) em temas para Linux, com uma interface nativa em português. Importe seus arquivos, confira a prévia, associe as funções e exporte ou instale o tema. A instalação é feita apenas na sua conta; depois, selecione o tema nas configurações de aparência do KDE, GNOME ou do seu ambiente.
 
-Para instalar, siga os comandos da seção [Installation](#installation). A versão inicial não aceita `.ani`; não há suporte a animações nem salvamento do projeto de edição. Os temas exportados ficam salvos normalmente. A aplicação não sobrescreve temas existentes.
+Para instalar, siga os comandos da seção [Installation](#installation). A versão inicial não aceita `.ani`; não há suporte a animações nem salvamento do projeto de edição. Os temas exportados ficam salvos normalmente. Ao encontrar um tema existente, o aplicativo pede confirmação para substituir e guarda uma cópia da versão anterior. A opção **Pixel art** amplia cursores como o Mario sem suavizar as bordas; o KDE poderá selecionar os tamanhos gerados.
 
 ## Related work and credits
 
