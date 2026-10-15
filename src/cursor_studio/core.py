@@ -64,6 +64,7 @@ ROLES: dict[str, tuple[str, tuple[str, ...]]] = {
     "openhand": ("Mão aberta", ("grab",)),
     "closedhand": ("Mão fechada", ("grabbing",)),
     "up_arrow": ("Seta para cima", ("center_ptr",)),
+    "pencil": ("Escrita manual", ("draft",)),
     "vertical-text": ("Texto vertical", ()),
     "zoom-in": ("Ampliar", ()),
     "zoom-out": ("Reduzir", ()),
@@ -168,7 +169,7 @@ def export_theme(assignments: dict[str, Cursor], name: str, parent: str | Path) 
                 (cursors / alias).symlink_to(role)
         (stage / "index.theme").write_text(
             f"[Icon Theme]\nName={name.strip()}\nComment=Created with Cursor Studio\n"
-            "Inherits=Adwaita\nExample=left_ptr\n", encoding="utf-8")
+            "Inherits=Breeze,Adwaita\nExample=left_ptr\n", encoding="utf-8")
         # Reserve the destination first, then move staged contents. Refuse races.
         destination.mkdir()
         try:
@@ -188,12 +189,51 @@ def user_icons_dir() -> Path:
     return base / "icons"
 
 
+def register_user_theme(theme: Path) -> Path:
+    """Expose XDG-installed themes to libXcursor builds using the legacy search path.
+
+    Keep the actual theme in XDG_DATA_HOME; only add a per-theme compatibility link.
+    Never replace an unrelated directory or link.
+    """
+    theme = theme.resolve()
+    legacy = Path.home() / ".icons"
+    if legacy.resolve() == theme.parent:
+        return theme
+    legacy.mkdir(parents=True, exist_ok=True)
+    link = legacy / theme.name
+    if link.exists() or link.is_symlink():
+        if link.is_symlink() and link.resolve() == theme:
+            return theme
+        raise CursorError(f"O caminho de compatibilidade já existe: {link}. Nenhum arquivo foi substituído.")
+    link.symlink_to(theme, target_is_directory=True)
+    return theme
+
+
+def install_user_theme(assignments: dict[str, Cursor], name: str) -> Path:
+    slug = theme_slug(name)
+    target = user_icons_dir().resolve() / slug
+    legacy = Path.home() / ".icons" / slug
+    if (legacy.exists() or legacy.is_symlink()) and legacy != target:
+        if not (legacy.is_symlink() and legacy.resolve() == target):
+            raise CursorError(f"Já existe um tema em {legacy}. Escolha outro nome.")
+    theme = export_theme(assignments, name, user_icons_dir())
+    try:
+        return register_user_theme(theme)
+    except OSError as exc:
+        raise CursorError(f"Tema salvo em {theme}, mas não foi possível registrar a compatibilidade: {exc}") from exc
+
+
 def guess_role(path: Path) -> str | None:
     name = re.sub(r"[^a-z0-9]", "", path.stem.lower())
     for role in ROLES:
         if name == re.sub(r"[^a-z0-9]", "", role):
             return role
     guesses = {
+        "normalselect": "left_ptr", "alternateselect": "up_arrow",
+        "linkselect": "hand2", "precisionselect": "crosshair", "textselect": "xterm",
+        "handwriting": "pencil", "workinginbackground": "left_ptr_watch",
+        "horizontalresize": "sb_h_double_arrow", "verticalresize": "sb_v_double_arrow",
+        "diagonalresize1": "size_fdiag", "diagonalresize2": "size_bdiag",
         "arrow": "left_ptr", "normal": "left_ptr", "pointer": "left_ptr",
         "link": "hand2", "hand": "hand2", "ibeam": "xterm", "text": "xterm",
         "busy": "watch", "wait": "watch", "working": "left_ptr_watch",

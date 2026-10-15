@@ -135,3 +135,39 @@ def test_user_install_respects_xdg(tmp_path, monkeypatch):
     assert user_icons_dir() == tmp_path / "icons"
     monkeypatch.setenv("XDG_DATA_HOME", "relative-is-invalid")
     assert user_icons_dir().is_absolute()
+
+
+@pytest.mark.parametrize("name,role", [("Normal Select.cur", "left_ptr"), ("Alternate Select.cur", "up_arrow"), ("Precision Select.cur", "crosshair"), ("Text Select.cur", "xterm"), ("Working In Background.cur", "left_ptr_watch")])
+def test_windows_scheme_names(name, role):
+    from pathlib import Path
+    from cursor_studio.core import guess_role
+    assert guess_role(Path(name)) == role
+
+
+def test_install_registers_legacy_lookup_and_is_idempotent(tmp_path, monkeypatch):
+    from pathlib import Path
+    from cursor_studio.core import install_user_theme, register_user_theme
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    theme = install_user_theme({"left_ptr": cursor}, "Compatible")
+    link = tmp_path / ".icons/compatible"
+    assert link.is_symlink()
+    assert link.resolve() == theme
+    assert register_user_theme(theme) == theme
+    assert (link / "cursors/left_ptr").read_bytes().startswith(b"Xcur")
+
+
+def test_install_preserves_legacy_conflicts(tmp_path, monkeypatch):
+    from pathlib import Path
+    from cursor_studio.core import install_user_theme
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    existing = tmp_path / ".icons/compatible"
+    existing.mkdir(parents=True)
+    (existing / "keep.txt").write_text("existing theme")
+    cursor = read_cur(make_cur(tmp_path / "arrow.cur"))
+    with pytest.raises(CursorError):
+        install_user_theme({"left_ptr": cursor}, "Compatible")
+    assert (existing / "keep.txt").read_text() == "existing theme"
+    assert not (tmp_path / "data/icons/compatible").exists()

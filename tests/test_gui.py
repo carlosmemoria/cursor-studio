@@ -80,3 +80,45 @@ def test_gui_exports_theme_in_background(tmp_path):
     assert window.install.isEnabled()
     window.deleteLater()
     app.processEvents()
+
+
+
+def test_role_transfer_accept_and_cancel(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    cursors = [read_cur(make_cur(tmp_path / name)) for name in ["arrow.cur", "link.cur"]]
+    window.imported((cursors, []))
+    window.files.setCurrentRow(1)
+    monkeypatch.setattr(window, "ask", lambda *args: False)
+    window.role.setCurrentIndex(window.role.findData("left_ptr"))
+    assert window.roles[cursors[0].path] == "left_ptr"
+    assert window.roles[cursors[1].path] == "hand2"
+    monkeypatch.setattr(window, "ask", lambda *args: True)
+    window.role.setCurrentIndex(window.role.findData("left_ptr"))
+    assert window.roles[cursors[0].path] is None
+    assert window.roles[cursors[1].path] == "left_ptr"
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_dialog_contrast_under_light_system_palette():
+    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QLabel, QMessageBox
+    app = QApplication.instance() or QApplication([])
+    previous = app.palette()
+    light = QPalette()
+    light.setColor(QPalette.ColorRole.Window, QColor("white"))
+    light.setColor(QPalette.ColorRole.WindowText, QColor("black"))
+    app.setPalette(light)
+    app.setStyleSheet(STYLE)
+    dialog = QMessageBox()
+    dialog.setText("Mensagem legível")
+    dialog.show()
+    app.processEvents()
+    text = dialog.findChild(QLabel, "qt_msgbox_label")
+    assert dialog.palette().color(QPalette.ColorRole.Window).lightness() < 70
+    assert text.palette().color(QPalette.ColorRole.WindowText).lightness() > 180
+    dialog.hide()
+    dialog.deleteLater()
+    app.setPalette(previous)
+    app.processEvents()

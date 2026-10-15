@@ -13,10 +13,12 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .core import Cursor, ROLES, export_theme, guess_role, read_cur, user_icons_dir
+from .core import Cursor, ROLES, export_theme, guess_role, install_user_theme, read_cur, user_icons_dir
 
 STYLE = """
 * { font-family: 'Inter', 'Noto Sans', sans-serif; font-size: 13px; }
+QDialog, QMessageBox { background-color: #191c24; color: #e8eaf2; }
+QMessageBox QLabel { color: #e8eaf2; background: transparent; }
 QMainWindow, QWidget#root { background: #101217; color: #e8eaf2; }
 QLabel { color: #e8eaf2; background: transparent; }
 QLabel#muted { color: #8e96a9; }
@@ -399,9 +401,13 @@ class Window(QMainWindow):
         role = self.role.currentData()
         conflict = next((p for p, value in self.roles.items() if role and value == role and p != cursor.path), None)
         if conflict:
-            self.error(f"Esta função já está associada a {conflict.name}. Remova a associação anterior primeiro.")
-            self.select(self.files.currentRow())
-            return
+            answer = self.ask("Transferir função?",
+                              f"A função {ROLES[role][0]} está em {conflict.name}.\n\n"
+                              f"Transferir para {cursor.path.name}? O arquivo anterior ficará sem função.")
+            if not answer:
+                self.select(self.files.currentRow())
+                return
+            self.roles[conflict] = None
         self.roles[cursor.path] = role
         self.refresh()
 
@@ -441,11 +447,13 @@ class Window(QMainWindow):
         def complete(path):
             self.status.setText(f"Tema {'instalado' if installed else 'exportado'}: {path}")
             if installed:
-                QMessageBox.information(self, "Tema instalado", f"Tema disponível em:\n{path}\n\n"
+                self.notify("Tema instalado", f"Tema disponível em:\n{path}\n\n"
                                         "Abra as configurações de aparência do seu ambiente e selecione "
                                         f"“{name.strip()}”. Se não aparecer, reabra as configurações.\n\n"
                                         "Funções não fornecidas usam o tema herdado quando disponível.")
-        self.run_task(lambda: export_theme(assignments, name, parent), complete, "Gerando tema Xcursor…")
+        operation = (lambda: install_user_theme(assignments, name)) if installed else (
+            lambda: export_theme(assignments, name, parent))
+        self.run_task(operation, complete, "Gerando tema Xcursor…")
 
     def run_task(self, function, complete, message):
         if self.busy:
@@ -475,6 +483,24 @@ class Window(QMainWindow):
         self.name.setEnabled(True)
         self.select(self.files.currentRow())
         self.refresh()
+
+    def notify(self, title, message):
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle(title)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setText(message)
+        dialog.exec()
+
+    def ask(self, title, message):
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle(title)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setText(message)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        dialog.setDefaultButton(QMessageBox.StandardButton.No)
+        return dialog.exec() == QMessageBox.StandardButton.Yes
 
     def error(self, message):
         self.status.setText("Não foi possível concluir. Confira os detalhes.")

@@ -37,7 +37,7 @@ All processing is local. The app does not upload cursors, run Windows installers
 
 CUR images encoded as PNG or DIB are decoded using Pillow. Xcursor serialization is implemented in this project, with premultiplied ARGB pixels. Alternate images with identical dimensions are collapsed to the last entry. The app supports up to 200 files per session, 128 images per file and 32 MiB per input file, with a 256 MiB decoded-image budget per session.
 
-Themes target desktops that consume Xcursor, including common KDE/GNOME setups on X11 and Wayland. Selection and fallback behavior depend on the desktop/compositor. Missing roles inherit `Adwaita` when it is installed; the app does not manufacture unavailable cursor artwork. The first release is tested on Debian; other distributions are not yet verified. The GUI is currently in Brazilian Portuguese.
+Themes target desktops that consume Xcursor, including common KDE/GNOME setups on X11 and Wayland. Selection and fallback behavior depend on the desktop/compositor. Missing roles inherit `Breeze` or `Adwaita` when installed; the app does not manufacture unavailable cursor artwork. The first release is tested on Debian; other distributions are not yet verified. The GUI is currently in Brazilian Portuguese.
 
 ## Installation
 
@@ -65,11 +65,11 @@ The launcher points to this environment. Keep the repository and `.venv` at the 
 
 1. Import your `.cur` files with **Importar .cur**, drag and drop, or `Ctrl+O`.
 2. Select a file and inspect its preview and resolutions.
-3. Choose a role under **Função no tema**. Assign at least **Ponteiro padrão**. Each role can only be assigned once.
-4. Name the theme. **Exportar tema** creates a folder in your chosen destination; **Instalar no Linux** writes to `$XDG_DATA_HOME/icons` (default `~/.local/share/icons`).
+3. Choose a role under **Função no tema**. Assign at least **Ponteiro padrão**. Each role can only be assigned once; assigning an occupied role offers to transfer it.
+4. Name the theme. **Exportar tema** creates a folder in your chosen destination; **Instalar no Linux** writes to `$XDG_DATA_HOME/icons` (default `~/.local/share/icons`) and registers a per-theme link in `~/.icons` for legacy Xcursor search paths.
 5. Select the installed theme in your desktop's appearance settings. Reopen those settings if the theme list is cached.
 
-Existing theme folders are never overwritten. Choose another theme name or destination to export again. Deleting a file from the app only removes it from the current session, never from disk.
+Existing theme folders and compatibility links are never overwritten. To remove an installed theme, delete its theme folder and its matching `~/.icons/<theme-slug>` link. Choose another theme name or destination to export again. Deleting a file from the app only removes it from the current session, never from disk.
 
 ## Command line
 
@@ -93,7 +93,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/pytest -q
 .venv/bin/python -m build
 ```
 
-Tests cover PNG/DIB CUR decoding, hotspots, malformed input, premultiplied pixels, theme aliases, overwrite protection, CLI behavior and GUI state transitions. When `libXcursor` is present, an integration test opens the generated files through the system library. CI runs on Python 3.11–3.13.
+Tests cover PNG/DIB CUR decoding, hotspots, malformed input, premultiplied pixels, theme aliases, overwrite protection, CLI behavior, compatibility links, Windows scheme names, role transfer, dialog contrast and GUI state transitions. When `libXcursor` is present, an integration test opens the generated files through the system library. CI runs on Python 3.11–3.13.
 
 ## Português
 
